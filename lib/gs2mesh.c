@@ -1,7 +1,9 @@
 /* gs2mesh.c - procedural Gaussian-splat -> mesh, pure CPU (no AI/CUDA/xformers).
  * Reads a TRELLIS save_ply gaussian (17 floats/splat: x,y,z / f_dc_0..2 /
  * opacity / scale_0..2 / rot_0..3), scatters each splat's 3D Gaussian density
- * into an (N+1)^3 node grid (max-density), extracts the isosurface via marching
+ * into an (N+1)^3 node grid (max-envelope: stays connected on thin reliefs --
+ * a summed field shatters them, measured; see scatter), box-blurs the field
+ * to kill the arg-max ridges that facet the isosurface, extracts via marching
  * tetrahedra, writes an OBJ.  Runs in CPU RAM only.
  */
 #include <stdio.h>
@@ -103,9 +105,31 @@ int main(int argc, char **argv){
                    +d[2]*(Sinv[6]*d[0]+Sinv[7]*d[1]+Sinv[8]*d[2]);
             float dens=sp[i].op*expf(-0.5f*q);
             size_t cell=((size_t)a*(N+1)+b)*(N+1)+c;
+            /* max-envelope: keeps the shell CONNECTED on thin reliefs (the
+             * summed field shatters them -- measured: 1-10K components at
+             * every threshold). The max field's C0 ridges are what facet the
+             * isosurface; the blur below rounds them. (2026-08-27) */
             if(dens>nodes[cell]) nodes[cell]=dens;
             if(dens>mxden) mxden=dens;
         }
+    }
+    /* box-blur the max-envelope: 2 passes kill the arg-max ridges that make
+     * the isosurface jagged, while the envelope stays connected. Recompute
+     * the peak after blurring so the relative threshold still makes sense. */
+    {
+        float *tmp=malloc(nnode*sizeof(float));
+        for(int pass=0;pass<2;pass++){
+            for(int a=1;a<N;a++) for(int b=1;b<N;b++) for(int c=1;c<N;c++){
+                float s=0;
+                for(int da=-1;da<=1;da++) for(int db=-1;db<=1;db++) for(int dc=-1;dc<=1;dc++)
+                    s+=nodes[((size_t)(a+da)*(N+1)+b+db)*(N+1)+c+dc];
+                tmp[((size_t)a*(N+1)+b)*(N+1)+c]=s/27.0f;
+            }
+            memcpy(nodes,tmp,nnode*sizeof(float));
+        }
+        free(tmp);
+        mxden=0.f;
+        for(size_t i=0;i<nnode;i++) if(nodes[i]>mxden) mxden=nodes[i];
     }
     float TH=mxden*THFrac;
     printf("grid=%d splats=%ld max_density=%.4f thr=%.5f\n",N,n,mxden,TH);

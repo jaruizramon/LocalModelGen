@@ -10,10 +10,13 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-gl/gl/v3.3-core/gl"
@@ -25,6 +28,21 @@ import (
 var gwin *glfw.Window
 
 func init() { runtime.LockOSThread() }
+
+// crashLog converts native crashes (cgo/GLFW/imgui segfaults die silently
+// with exit 1 and no output) into a logged goroutine dump so the trigger is
+// diagnosable. Go installs its signal handler on every thread, so a fault in
+// C code is still delivered here.
+func init() {
+	sigc := make(chan os.Signal, 4)
+	signal.Notify(sigc, syscall.SIGSEGV, syscall.SIGABRT, syscall.SIGBUS, syscall.SIGILL)
+	go func() {
+		for s := range sigc {
+			log.Printf("=== CAUGHT %v — goroutine dump:\n%s", s, debug.Stack())
+			os.Exit(1)
+		}
+	}()
+}
 
 const viewW, viewH = 760, 560
 

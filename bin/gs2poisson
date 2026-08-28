@@ -52,10 +52,13 @@ cluster_idx, cluster_cnt, _ = mesh.cluster_connected_triangles()
 big = int(np.argmax(cluster_cnt))
 mesh.remove_triangles_by_mask((np.asarray(cluster_idx) != big).tolist())
 mesh.remove_unreferenced_vertices()
-# splat view frame: ply is (x,y,z); the viewer renders (x,-y,-z) -- same as gs2mesh
-verts = np.asarray(mesh.vertices).copy()
-verts[:, 1] = -verts[:, 1]
-verts[:, 2] = -verts[:, 2]
-mesh.vertices = o3d.utility.Vector3dVector(verts)
-o3d.io.write_triangle_mesh(out, mesh)
-print(f'gs2poisson: wrote {out} ({len(mesh.vertices)} v, {len(mesh.triangles)} f)', flush=True)
+# write a plain OBJ (v x y z / f a b c): Open3D's own writer emits "vn" lines
+# and "f v//vn" slash-indexed faces, which naive parsers misread
+verts = np.asarray(mesh.vertices)
+faces = np.asarray(mesh.triangles) + 1          # 1-indexed
+with open(out, 'w') as fh:
+    for x, y, z in verts:
+        fh.write(f'v {x:.6f} {y:.6f} {z:.6f}\n')
+    for a, b, c in faces:
+        fh.write(f'f {a} {b} {c}\n')
+print(f'gs2poisson: wrote {out} ({len(verts)} v, {len(faces)} f)', flush=True)

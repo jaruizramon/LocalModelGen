@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/go-gl/gl/v3.3-core/gl"
 )
@@ -244,9 +245,19 @@ func parseObjMesh(path string) (*MeshData, error) {
 			fmt.Sscanf(string(line[2:]), "%f %f %f", &x, &y, &z)
 			pos = append(pos, x, y, z)
 		} else if line[0] == 'f' && line[1] == ' ' && len(line) > 2 {
-			var a, b, c int
-			fmt.Sscanf(string(line[2:]), "%d %d %d", &a, &b, &c)
-			idx = append(idx, uint32(a-1), uint32(b-1), uint32(c-1))
+			// tokens may be "1", "1/2" or "1//2" (v/vt/vn) -- take the vertex
+			// index only; %d on "6//6" reads 6 but then the next %d fails and
+			// the whole face collapses to (0,0,0).
+			var t []string = strings.Fields(string(line[2:]))
+			if len(t) >= 3 {
+				var a, b, c int
+				na, ea := fmt.Sscanf(t[0], "%d", &a)
+				nb, eb := fmt.Sscanf(t[1], "%d", &b)
+				nc, ec := fmt.Sscanf(t[2], "%d", &c)
+				if na == 1 && ea == nil && nb == 1 && eb == nil && nc == 1 && ec == nil {
+					idx = append(idx, uint32(a-1), uint32(b-1), uint32(c-1))
+				}
+			}
 		}
 	}
 	if len(pos) < 3 || len(idx) < 3 {

@@ -29,8 +29,38 @@ OrbitControls}.js` all 200, importmap + canvas present, CORS open, `.glb`
 fetch works. **Viewer logic is covered by a behavioral test instead** — real
 three.js objects against a byte-identical copy of `viewer.js`, 11/11 assertions
 (idempotent init, full material+texture disposal, load-race token, teardown).
-Pixels remain unverified; needs `apt install xvfb` (or any capture tool) or a
-manual look in a real browser.
+## On V100 arrival (Volta sm_70 — no bf16, no TF32; 16/32 GB)
+
+Context from 2026-08-27 A/Bs on the 8 GB RTX 3070: 256³ decode is genuinely
+over-budget fp32 there (~7.3 GB peak); it only runs via bf16 field
+(`LMG_FIELD_DTYPE=bf16`) + int32 dense-grid index tables + expandable_segments
+(torch 5.6 GB / card 7.15 GB, ~30 s). A V100 has none of the bf16 path but
+doesn't need it — verify that instead.
+
+- **Verify the `ultra` tier on real hardware**: `hwprofile.py` selects
+  `subsample_res=256` fp32 above 16 GB. Measure decode peak/timing on full
+  fp32-256³ dense grids (the 3070 never ran true fp32-256; it OOM'd at
+  ~7.3 GB peak). Record the numbers in AGENT.md. If 16 GB is tight with a
+  desktop session, the int32 index-table patch + `expandable_segments:True`
+  still apply (both architecture-neutral) — try them before touching dtype.
+- **Fragmentation re-check at true fp32-256³**: the 3070 showed 8–33
+  components at 96–256³ regardless of res. If the V100's full-resolution
+  decode also fragments, the PyMeshFix `repair(joincomp=True,
+  remove_smallest_components=False)` post-repair stage is required there too;
+  if it doesn't, the 3070's fragmentation was partly a subsampled-field
+  artifact — worth knowing either way.
+- **bf16 is NOT available on Volta** (`torch.cuda.is_bf16_supported()` False;
+  PyTorch needs CC ≥ 8.0). If 256³ ever needs memory relief on the V100:
+  use fp16 (native tensor cores — near-zero-SDF shatter caveat documented in
+  AGENT.md) or the int32/ES levers. Do NOT rely on `LMG_FIELD_DTYPE=bf16`.
+- **Optional precursor (on the 3070, before the V100 matters)**: A/B
+  true-bf16 vs bf16-rounded-fp32 at 160³ (fits either way) to isolate the
+  8-bit-mantissa effect from the memory win — tells us whether bf16's only
+  cost is mantissa precision, which informs the V100 fp16-vs-emulation choice.
+- **If bf16 *numerics* are ever required on the V100**: emulate — store fp32,
+  round to the bf16 value grid (round-to-nearest: add 0x8000 bias, mask low
+  16 bits; or stochastic rounding for unbiased results). Research-only: slower
+  than fp32, zero memory savings.
 
 ## Done
 

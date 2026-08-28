@@ -226,12 +226,16 @@ loads directly via three.js GLTFLoader — OBJ is for Blender/legacy pipelines.
   it but is blocked by the decoder's **~5 GB swin-attention workspace**
   (CUDA-only, not cell-proportional, and not CPU-runnable) — see the 256-on-8GB
   notes below.
-- **Procedural alternative (`bin/gs2mesh`)**: a pure-**CPU** gaussian→mesh that
-  scatters the splat density, then marching-tetrahedra + weld/decimate +
-  Taubin smoothing → a connected, decimated OBJ. It fits 8 GB (runs in CPU RAM,
-  no CUDA attention), but the splat-density isosurface is inherently
-  noisy/faceted (a jagged shell) — high-frequency bumps survive even 16 Taubin
-  iterations.
+- **Desktop "Generate Mesh" = `bin/gs2poisson` (screened Poisson, Open3D,
+  CPU, ~18 s)** — the density-isosurface path (`bin/gs2mesh`) was measured out
+  for sparse splat clouds: max/sum/blurred/dilated fields all yield 5.7–10K
+  disconnected islands on thin-relief assets (no connected level set exists),
+  while Poisson builds ONE continuous implicit surface. Pipeline: opacity-
+  filter floaters → estimate+orient normals (PLY normals are zero placeholders)
+  → `create_from_point_cloud_poisson(depth=9)` → crop low-density hallucination
+  → quadric-decimate to 60K → keep largest component → plain OBJ. `bin/gs2mesh`
+  remains for blob-like dense splat clouds; its Taubin stage had a 2×
+  adjacency under-allocation (ASan) fixed 2026-08-27.
 - **Open work**: (a) ~~fix the `gs2mesh` field-blur~~ — the "field-blur" never
   existed in the source (doc error); the crash was a **2× adjacency
   under-allocation** in the Taubin stage (`nbr` sized `off[nverts]` while the

@@ -1,0 +1,17 @@
+# generated outputs (2.5GB+; retention-pruned by the worker)
+tmp/
+worker.log
+
+# python artifacts
+__pycache__/
+*.pyc
+
+# built binaries (sources are in-repo: lib/gs2mesh.c, orchestrator/cmesh Makefile,
+# orchestrator/main.go, desktop/*.go)
+bin/
+orchestrator/3dgen
+desktop/lmgdesk
+orchestrator/cmesh/*.o
+
+# misc
+.DS_Store

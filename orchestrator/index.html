@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image to 3D Asset — TRELLIS v1 on 8GB VRAM</title>
+<style>
+  :root{
+    --bg:#0b0f19; --card:#171b26; --card2:#1d2230; --line:#2a3142;
+    --txt:#e5e7eb; --muted:#8b93a7; --blue:#4c8dff; --blue-h:#3a7bef;
+    --ok:#4ade80; --err:#f87171;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.5 ui-sans-serif,system-ui,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1200px;margin:0 auto;padding:20px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:12px;margin:0 0 18px}
+  .cols{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:16px;align-items:start}
+  @media(max-width:900px){.cols{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 8px;font-weight:600;text-transform:none}
+  label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:120px}
+  input[type=number],input[type=range]{width:100%;background:var(--card2);border:1px solid var(--line);
+    color:var(--txt);border-radius:6px;padding:5px 8px}
+  input[type=range]{padding:0}
+  input[type=file]{font-size:12px;color:var(--muted)}
+  button{padding:8px 14px;border-radius:6px;border:1px solid var(--line);background:var(--card2);
+    color:var(--txt);cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--blue)}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600;margin-top:14px}
+  button.primary:hover{background:var(--blue-h)}
+  button.secondary{background:var(--card2)}
+  canvas{display:block;width:100%;border-radius:8px;background:#000}
+  canvas#preview{max-height:240px;object-fit:contain}
+  canvas#poly-canvas{max-height:280px;border:1px dashed var(--line);cursor:crosshair;
+    background:#0d1117;touch-action:none}
+  canvas#viewer{width:100%;height:340px;background:#0d1117;outline:none;touch-action:none}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
+  .status{font:12px/1.5 ui-monospace,monospace;color:#7ce38b;margin:10px 0;white-space:pre-wrap}
+  .status.err{color:var(--err)}
+  .result a{display:block;margin:4px 0;color:#7fb3ff}
+  video{width:100%;border-radius:8px;margin-top:8px}
+  .mini{min-width:34px;font-weight:700}
+  .sec{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+  #poly-status{color:var(--muted);font-size:12px}
+  details{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:14px}
+  summary{cursor:pointer;color:var(--txt);font-size:13px}
+  .vbtn{padding:4px 10px;min-width:34px;font-size:13px}
+  .vbtn.zoom{font-size:16px;font-weight:700}
+</style>
+<script type="importmap">{"imports":{"three":"/static/three.module.js","three/addons/":"/static/jsm/"}}</script>
+<script type="module">
+import * as V from '/static/viewer.js';
+window.viewer3d = V;
+window.viewerZoomIn = () => V.zoomIn();
+window.viewerZoomOut = () => V.zoomOut();
+window.viewerReset = () => V.resetView();
+window.viewerRotate = d => V.rotateBy(d);
+window.viewerSpin = b => { const on = V.toggleAutoRotate(); if (b) b.textContent = on ? 'Pause spin' : 'Auto-spin'; };
+V.initViewer(document.getElementById('viewer'), '');
+</script>
+</head>
+<body>
+<div class="wrap">
+<h1>Image to 3D Asset — TRELLIS v1 on 8GB VRAM</h1>
+<p class="sub">Frontend drives the LocalModelGen worker (Go-orchestrated, weights in DRAM, one sub-model on GPU at a time).</p>
+<div class="cols">
+  <!-- LEFT -->
+  <div>
+    <div class="card">
+      <h2>Image Prompt</h2>
+      <input type="file" id="img" accept="image/*" required>
+      <canvas id="preview" style="margin-top:8px"></canvas>
+    </div>
+    <div class="card">
+      <h2>Mask (optional)</h2>
+      <div class="row" style="margin-bottom:6px">
+        <button type="button" class="secondary" id="poly-load">Load image</button>
+        <button type="button" class="secondary" id="poly-done">Done</button>
+        <button type="button" class="secondary" id="poly-clear">Clear</button>
+      </div>
+      <canvas id="poly-canvas"></canvas>
+      <div id="poly-status" style="margin-top:6px">Upload an image, click Load image, then click outline points; double-click or Done to close.</div>
+    </div>
+    <div class="card">
+      <h2>Generation</h2>
+      <label>Seed</label><input type="number" id="seed" value="1" min="0" max="2147483647">
+      <div class="sec"></div>
+      <h2 style="margin:0 0 8px">Stage 1: Sparse Structure</h2>
+      <div class="row">
+        <div><label>Guidance</label><input type="range" id="ss_cfg" min="0" max="10" step="0.1" value="7.5">
+          <span class="hint" id="ss_cfg_v">7.5</span></div>
+        <div><label>Steps</label><input type="range" id="ss_steps" min="1" max="50" step="1" value="8">
+          <span class="hint" id="ss_steps_v">8</span></div>
+      </div>
+      <h2 style="margin:12px 0 8px">Stage 2: Structured Latent</h2>
+      <div class="row">
+        <div><label>Guidance</label><input type="range" id="slat_cfg" min="0" max="10" step="0.1" value="3.0">
+          <span class="hint" id="slat_cfg_v">3.0</span></div>
+        <div><label>Steps</label><input type="range" id="slat_steps" min="1" max="50" step="1" value="8">
+          <span class="hint" id="slat_steps_v">8</span></div>
+      </div>
+      <label>Target Triangles (0 = raw)</label>
+      <input type="range" id="tris" min="0" max="20000" step="100" value="3000">
+      <span class="hint" id="tris_v">3000</span>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+        <input type="checkbox" id="smooth" checked style="width:auto"> Smooth mesh (dominant-orientation)
+      </label>
+      <span class="hint">Taubin + dominant-orientation smoothing on the exported mesh</span>
+      <label>Offload to RAM (1 = max DRAM offload)</label>
+      <input type="range" id="offload" min="0" max="1" step="0.05" value="1">
+      <span class="hint" id="offload_v">1.00 — 0 keeps the most-used model on GPU (faster, more VRAM)</span>
+      <div class="sec"></div>
+      <h2 style="margin:0 0 8px">GLB Extraction</h2>
+      <label>Texture Size (lower = less VRAM)</label>
+      <input type="range" id="tex" min="256" max="2048" step="256" value="1024">
+      <span class="hint" id="tex_v">1024</span>
+      <div class="sec"></div>
+      <p class="hint" style="margin:0 0 8px">
+        <b>VRAM tips</b> (parameter up = more VRAM): Target Triangles down = less VRAM/flatter faces but less
+        texture detail. Texture Size down = much less VRAM (size²). Steps down = less VRAM. Guidance: negligible.
+        <b>Clear GPU Cache</b> if GPU-in-use creeps up.
+      </p>
+      <button type="button" class="secondary" id="clear">Clear GPU Cache</button>
+      <div class="status" id="clear_status"></div>
+      <button type="button" class="primary" id="generate">Generate</button>
+      <div class="status" id="status"></div>
+    </div>
+    <details>
+      <summary>GLB → OBJ Converter</summary>
+      <p class="hint">Upload a .glb (e.g. the generated one) to get .obj + .mtl + texture for Blender / WebGL.</p>
+      <input type="file" id="conv" accept=".glb">
+      <button type="button" class="secondary" id="convert">Convert to OBJ</button>
+      <div class="status" id="conv_status"></div>
+    </details>
+  </div>
+  <!-- RIGHT -->
+  <div>
+    <div class="card">
+      <canvas id="viewer" tabindex="0"></canvas>
+      <div class="row" style="margin-top:6px;align-items:center">
+        <button type="button" class="vbtn zoom" onclick="viewerZoomIn()" title="Zoom in (or scroll / + key)">+</button>
+        <button type="button" class="vbtn zoom" onclick="viewerZoomOut()" title="Zoom out (or scroll / - key)">−</button>
+        <button type="button" class="vbtn" onclick="viewerRotate(-30)" title="Rotate left 30°">↶</button>
+        <button type="button" class="vbtn" onclick="viewerRotate(30)" title="Rotate right 30°">↷</button>
+        <button type="button" class="vbtn" onclick="viewerSpin(this)">Pause spin</button>
+        <button type="button" class="vbtn" onclick="viewerReset()">Reset</button>
+      </div>
+      <div class="hint">Realtime render — drag to rotate, scroll or +/− to zoom, click the canvas then use +/−/0 keys.</div>
+    </div>
+    <div class="card">
+      <h2>Generated 3D Asset</h2>
+      <video id="video" controls autoplay loop style="display:none"></video>
+    </div>
+    <div class="card">
+      <h2>Results</h2>
+      <div class="status" id="gen_status"></div>
+      <div class="result" id="results"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const MAX_SEED = 2147483647;
+
+// ---- slider readouts -------------------------------------------------------
+function bindSlider(id, labelId, fmt){ 
+  const sl = $(id), lb = $(labelId);
+  if(!sl) return;
+  const upd = () => lb.textContent = fmt ? fmt(sl.value) : sl.value;
+  sl.addEventListener('input', upd); upd();
+}
+bindSlider('ss_cfg','ss_cfg_v', v=>v);
+bindSlider('ss_steps','ss_steps_v', v=>v);
+bindSlider('slat_cfg','slat_cfg_v', v=>v);
+bindSlider('slat_steps','slat_steps_v', v=>v);
+bindSlider('tris','tris_v', v=>v);
+bindSlider('tex','tex_v', v=>v);
+bindSlider('offload','offload_v', v=>(+v).toFixed(2)+' — 0 keeps the most-used model on GPU (faster, more VRAM)');
+
+// ---- image + polygon mask --------------------------------------------------
+let imgObj = null, polyPts = [], polyClosed = false, lastClick = 0;
+function drawImageTo(canvas, img, natural){
+  const w = natural ? img.naturalWidth : canvas.width;
+  const h = natural ? img.naturalHeight : canvas.height;
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+}
+function redrawPoly(){
+  const c = $('poly-canvas'), ctx = c.getContext('2d');
+  if(!imgObj){ ctx.clearRect(0,0,c.width,c.height); return; }
+  if(c.width !== imgObj.naturalWidth || c.height !== imgObj.naturalHeight){
+    const w = Math.min(720, imgObj.naturalWidth); const sc = w/imgObj.naturalWidth;
+    c.width = w; c.height = Math.round(imgObj.naturalHeight*sc);
+  }
+  ctx.drawImage(imgObj,0,0,c.width,c.height);
+  if(polyPts.length){
+    ctx.beginPath();
+    ctx.moveTo(polyPts[0][0]*c.width, polyPts[0][1]*c.height);
+    for(let i=1;i<polyPts.length;i++) ctx.lineTo(polyPts[i][0]*c.width, polyPts[i][1]*c.height);
+    if(polyClosed) ctx.closePath();
+    ctx.strokeStyle='#4fc3f7'; ctx.lineWidth=2; ctx.stroke();
+    if(polyClosed){ ctx.fillStyle='rgba(79,195,247,0.15)'; ctx.fill(); }
+    ctx.fillStyle='#fff';
+    for(let j=0;j<polyPts.length;j++){ ctx.beginPath();
+      ctx.arc(polyPts[j][0]*c.width, polyPts[j][1]*c.height, 3, 0, 7); ctx.fill(); }
+  }
+}
+function polyStatus(s){ $('poly-status').textContent = s; }
+function polyDone(){
+  if(!imgObj){ polyStatus('Load an image first.'); return; }
+  if(polyPts.length<3){ polyStatus('Need at least 3 points (have '+polyPts.length+').'); return; }
+  polyClosed = true; redrawPoly();
+  polyStatus(polyPts.length+' points - polygon applied; the status line will say "polygon mask applied".');
+}
+$('img').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f) return;
+  const url = URL.createObjectURL(f);
+  const im = new Image();
+  im.onload = ()=>{ imgObj = im; polyPts=[]; polyClosed=false;
+    drawImageTo($('preview'), im, true); redrawPoly();
+    polyStatus('Click Load image to draw a mask, or generate without one.'); URL.revokeObjectURL(url); };
+  im.src = url;
+});
+$('poly-load').addEventListener('click', ()=>{ 
+  if(!imgObj){ polyStatus('Upload an image first.'); return; }
+  polyPts=[]; polyClosed=false; redrawPoly();
+  polyStatus('Click outline points; double-click or Done to close.');
+});
+$('poly-done').addEventListener('click', polyDone);
+$('poly-clear').addEventListener('click', ()=>{ polyPts=[]; polyClosed=false; redrawPoly(); polyStatus('Cleared.'); });
+$('poly-canvas').addEventListener('click', e=>{
+  if(!imgObj){ polyStatus('Upload an image first.'); return; }
+  const now = Date.now(); if(now-lastClick<300) return; lastClick=now;
+  const r = e.target.getBoundingClientRect();
+  polyPts.push([(e.clientX-r.left)/r.width, (e.clientY-r.top)/r.height]);
+  polyClosed=false; redrawPoly();
+});
+$('poly-canvas').addEventListener('dblclick', e=>{
+  e.preventDefault(); if(!imgObj){ polyStatus('Upload an image first.'); return; }
+  const r = e.target.getBoundingClientRect();
+  polyPts.push([(e.clientX-r.left)/r.width, (e.clientY-r.top)/r.height]);
+  redrawPoly(); polyDone();
+});
+
+function maskedBlob(){
+  if(!imgObj) return Promise.resolve(null);
+  const c = document.createElement('canvas');
+  c.width = imgObj.naturalWidth; c.height = imgObj.naturalHeight;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(imgObj,0,0);
+  if(polyPts.length>=3){
+    ctx.globalCompositeOperation='destination-in';
+    ctx.beginPath();
+    ctx.moveTo(polyPts[0][0]*c.width, polyPts[0][1]*c.height);
+    for(let i=1;i<polyPts.length;i++) ctx.lineTo(polyPts[i][0]*c.width, polyPts[i][1]*c.height);
+    ctx.closePath(); ctx.fill();
+  }
+  return new Promise(res => c.toBlob(res,'image/png'));
+}
+
+function basename(p){ return (p||'').split('/').pop(); }
+
+async function generate(){
+  const img = $('img').files[0];
+  if(!img && !imgObj){ $('gen_status').textContent='No image uploaded.'; return; }
+  const st = $('status'); st.textContent='generating… (one-time model load on first run)';
+  $('generate').disabled = true;
+  try{
+    const maskBlob = await maskedBlob();
+    const fd = new FormData();
+    if(maskBlob) fd.append('image', maskBlob, 'image.png');
+    else if(imgObj){ const b = await new Promise(r=>{ const c=document.createElement('canvas');
+        c.width=imgObj.naturalWidth;c.height=imgObj.naturalHeight;c.getContext('2d').drawImage(imgObj,0,0);
+        c.toBlob(r,'image/png'); }); fd.append('image', b, 'image.png'); }
+    else fd.append('image', img, img.name);
+    fd.append('seed', $('seed').value||'1');
+    fd.append('ss_steps', $('ss_steps').value);
+    fd.append('slat_steps', $('slat_steps').value);
+    fd.append('ss_cfg', $('ss_cfg').value);
+    fd.append('slat_cfg', $('slat_cfg').value);
+    fd.append('target_tris', $('tris').value);
+    fd.append('texture_size', $('tex').value);
+    fd.append('smooth_mesh', $('smooth').checked);
+    fd.append('offload_ratio', (1-$('offload').value).toString());
+    const r = await fetch('/api/generate', {method:'POST', body:fd});
+    const j = await r.json();
+    if(j.error){ st.textContent='Error (generate): ' + j.error; st.classList.add('err'); return; }
+    $('gen_status').textContent = genStatusText(j);
+    const glbUrl = '/download/'+basename(j.glb);
+    if(window.viewer3d) window.viewer3d.loadModel(glbUrl);
+    const vid = $('video');
+    if(j.video){ vid.src = '/download/'+basename(j.video); vid.style.display='block'; }
+    showResults(j);
+    st.textContent=''; st.classList.remove('err');
+  }catch(e){ st.textContent='Error (generate): '+e.message; st.classList.add('err'); }
+  finally{ $('generate').disabled = false; }
+}
+function genStatusText(j){
+  let note='';
+  const kept=(j.keep_resident||[]).map(n=>n.replace(/_model$/,''));
+  if(kept.length) note=' · GPU-resident: '+kept.join(', ');
+  else if(j.offload_ratio>0) note=' · requested '+j.offload_ratio.toFixed(2)+' residency did not fit '+j.usable_vram_mb+' MB usable — fully offloaded';
+  else note=' · fully offloaded to RAM';
+  const poly = polyPts.length>=3 ? ' — polygon mask applied ('+polyPts.length+' pts)' : '';
+  return 'Done in '+(j.seconds||'?')+' s — '+(j.faces||0).toLocaleString()+' faces · peak '+(j.peak_mb||'?')+' MB'+note+poly+'. GLB/PLY/.blend ready.';
+}
+function showResults(j){
+  const links=[];
+  if(j.glb) links.push(['GLB', '/download/'+basename(j.glb)]);
+  if(j.ply) links.push(['Gaussian PLY', '/download/'+basename(j.ply)]);
+  if(j.zip) links.push(['OBJ zip', '/download/'+basename(j.zip)]);
+  if(j.blend) links.push(['Blender scene (.blend)', '/download/'+basename(j.blend)]);
+  $('results').innerHTML = links.map(([t,u])=>`<a href="${u}" download>${t}</a>`).join('');
+}
+
+$('generate').addEventListener('click', generate);
+
+$('clear').addEventListener('click', async ()=>{
+  const st=$('clear_status'); st.textContent='clearing…';
+  try{ const r=await fetch('/api/clear',{method:'POST'}); const j=await r.json();
+    if(j.error) st.textContent='Clear failed: '+j.error; else st.textContent='Cache cleared. Worker GPU in use: '+j.gpu_mb+' MB (extractor grids moved to DRAM).';
+  }catch(e){ st.textContent='Clear failed: '+e.message; }
+});
+
+$('convert').addEventListener('click', async ()=>{
+  const f=$('conv').files[0]; const st=$('conv_status');
+  if(!f){ st.textContent='No file uploaded.'; return; }
+  st.textContent='converting…';
+  const fd=new FormData(); fd.append('glb_file', f);
+  try{ const r=await fetch('/api/convert',{method:'POST',body:fd}); const j=await r.json();
+    if(j.error) st.textContent='Convert failed: '+j.error;
+    else if(j.zip) st.innerHTML='Converted: <a href="/download/'+basename(j.zip)+'" download>'+basename(j.zip)+'</a>';
+    else st.textContent='Convert failed: no zip returned.';
+  }catch(e){ st.textContent='Convert failed: '+e.message; }
+});
+</script>
+</body>
+</html>

@@ -125,14 +125,15 @@ script, three things were discovered by profiling that are REQUIRED on 8GB:
    Plus two one-line library patches (tensors now follow input dtype):
    - `trellis/representations/mesh/utils_cube.py`: `torch.zeros(..., dtype=value.dtype)` in `cubes_to_verts`, `dtype=feats.dtype` in `get_dense_attrs`
    - `trellis/representations/mesh/flexicubes/flexicubes.py`: `dtype=alpha.dtype` / `dtype=beta.dtype` / `dtype=voxelgrid_colors.dtype` for `vd`, `beta_sum`, `vd_color`
+   - `trellis/representations/mesh/utils_cube.py` `construct_dense_grid`: index tables as `torch.int32` — `cube_fx8` at 256³ is 1.07 GB as int64 (256³×8), the exact 1024 MiB alloc that OOMs 8 GB cards; index values stay < 2³¹ for res ≤ 1024, so int32 is precision-safe. Halves every dense-grid index tensor.
    Re-apply these if the repo is re-cloned/reset.
 
 Runtime env vars: `ATTN_BACKEND=xformers`, `SPCONV_ALGO=native`,
-`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256` — chosen over
-`expandable_segments:True` by measurement (13+ jobs on this card, peaks
-3.9–6.1 GB, no allocator-related OOM). The worker sets it deliberately before
-importing the runner; the runner's setdefault matches, so the two can never
-disagree.
+`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256` — the default, measured on the
+128³ path. For `subsample_res=256` use `expandable_segments:True` +
+`LMG_FIELD_DTYPE=bf16` (see the 256³ note in Issues; ES leaves ~330 MB more
+headroom than max_split_size at the 7.1 GB ceiling). The worker sets the
+allocator before importing the runner; the runner's setdefault matches.
 
 ## Notes
 
@@ -233,7 +234,14 @@ loads directly via three.js GLTFLoader — OBJ is for Blender/legacy pipelines.
   iterations.
 - **Open work**: (a) fix the `gs2mesh` field-blur (a heap bug currently crashes
   it — the blur is what would smooth the isosurface at the source); (b) switch
-  marching-tetrahedra → marching-cubes for cleaner topology; (c) on a >16 GB
-  card (e.g. V100) the mesh decoder auto-uses the `ultra` tier
-  (`subsample_res=256`) which removes the fragmentation — see `hwprofile.py`
-  tiers.
+  marching-tetrahedra → marching-cubes for cleaner topology; (c) fragmentation
+  is res-independent (measured 8–33 components at 96–256³) — the fix is
+  post-repair (PyMeshFix `joincomp`), not higher resolution.
+- **256³ decode on 8 GB (verified 2026-08-27)** — runs with
+  `LMG_FIELD_DTYPE=bf16` + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` +
+  the int32 index-table patch: torch peak 5.6 GB / card 7.15 GB, ~30 s/job.
+  Why it works: bf16 keeps fp32's exponent range (fp16 shatters the
+  near-zero SDF/deform field) and halves the dense field grids; int32 halves
+  `cube_fx8` (the 1.07 GB int64 table at 256³). fp32-256³ alone is genuinely
+  over-budget (~7.3 GB peak) — no allocator setting fixes that; ES only
+  removes the fragmentation-OOM so the 130 MiB-class failures stop.

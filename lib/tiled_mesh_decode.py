@@ -108,7 +108,8 @@ def extract_local_region(extractor, coords, feats, res=128, device='cuda'):
     return vertices, faces, colors_t
 
 
-def decode_mesh_low_vram(dec, slat, res=128, device='cuda'):
+def decode_mesh_low_vram(dec, slat, res=128, device='cuda',
+                         field_dtype=torch.float32):
     """Global torso + upsample + out_layer, subsample the 256^3 surface field
     to `res`^3, then ONE single-grid FlexiCubes extraction -> a clean,
     connected manifold (no tile seams).
@@ -116,6 +117,12 @@ def decode_mesh_low_vram(dec, slat, res=128, device='cuda'):
     dec: an SLatMeshDecoder (has .input_layer, .pos_embedder, .blocks,
     .upsample, .out_layer, .dtype, .pe_mode, .mesh_extractor). slat: the 64^3
     slat (fp32 recommended).
+
+    `field_dtype`: dtype for the extracted surface field + dense grids + the
+    FlexiCubes call. The conv torso/upsample always run in the decoder's own
+    dtype; only the field tensors are cast. bf16 halves the dense-grid memory
+    (the 256^3 wall) while keeping fp32's exponent range -- fp16 shatters the
+    near-zero SDF/deform field. Default fp32 (unchanged behavior).
     """
     from trellis.modules import sparse as sp
     from trellis.representations.mesh.cube2mesh import MeshExtractResult
@@ -173,8 +180,8 @@ def decode_mesh_low_vram(dec, slat, res=128, device='cuda'):
         coords, feats = uniq, fsub
         memlog(f'field subsampled: {feats.shape[0]} cells @ {res}^3')
 
-    r = extract_local_region(dec.mesh_extractor, coords, feats,
-                             res=res, device=device)
+    r = extract_local_region(dec.mesh_extractor, coords,
+                             feats.to(field_dtype), res=res, device=device)
     if r is None:
         return MeshExtractResult(vertices=torch.zeros(0, 3, device=device),
                                  faces=torch.zeros(0, 3, dtype=torch.long,

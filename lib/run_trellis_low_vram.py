@@ -45,6 +45,13 @@ if os.path.isdir(_trellis_repo):
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import torch
 import imageio
+# Mesh-decode field precision (A/B knob): casts the extracted surface field +
+# dense grids + FlexiCubes call to bf16, halving the 256^3 memory wall while
+# keeping fp32's exponent range (fp16 shatters the near-zero SDF/deform field).
+# The conv torso/upsample stay in the decoder's own dtype. Default fp32.
+FIELD_DTYPE = {'bf16': torch.bfloat16, 'fp16': torch.float16,
+               'fp32': torch.float32}.get(
+                   os.environ.get('LMG_FIELD_DTYPE', 'fp32'), torch.float32)
 from PIL import Image
 from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.utils import render_utils, postprocessing_utils
@@ -273,7 +280,7 @@ def _run_low_vram_staged(image: Image.Image, seed: int = 1, steps: int = 8,
                             pass
             from tiled_mesh_decode import decode_mesh_low_vram
             out = decode_mesh_low_vram(dec, slat, res=subsample_res,
-                                       device='cuda')
+                                       device='cuda', field_dtype=FIELD_DTYPE)
             out.vertices = out.vertices.float()
             # tiled decode returns vertex_attrs=None: texture comes from the
             # gaussian bake below (same as the quadric-simplified path).

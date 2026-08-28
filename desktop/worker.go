@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const defaultOrch = "http://127.0.0.1:8082"
+const defaultOrch = "http://127.0.0.1:8080"
 
 func orchURL() string {
 	if v := os.Getenv("LMG_ORCH"); v != "" {

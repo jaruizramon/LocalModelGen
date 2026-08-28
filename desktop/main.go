@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -460,7 +461,8 @@ func main() {
 					st.phase = ""
 					return
 				}
-				obj := filepath.Join("..", "tmp", fmt.Sprintf("gs_mesh_%d.obj", time.Now().Unix()))
+				stamp := time.Now().Unix()
+				obj := filepath.Join("..", "tmp", fmt.Sprintf("gs_mesh_%d.obj", stamp))
 				// Poisson from splat centers: the density-isosurface path
 				// (gs2mesh) shatters sparse splat clouds into thousands of
 				// islands (measured); Poisson builds ONE connected surface.
@@ -472,6 +474,27 @@ func main() {
 					// Signal the MAIN loop to load it (single-threaded swap, so
 					// the goroutine never races the renderer/render state).
 					st.pendingObj = obj
+					// Assemble a ready-to-open .blend from the Poisson OBJ
+					// (same script the worker uses for its GLB, OBJ input) so
+					// "Open .blend in Blender" shows THIS mesh, not the
+					// FlexiCubes GLB one. Time-boxed like the worker's
+					// LMG_BLENDER_TIMEOUT so a wedged Blender cannot pin the
+					// busy flag.
+					blend := filepath.Join("..", "tmp", fmt.Sprintf("gs_mesh_%d.blend", stamp))
+					bbin := os.Getenv("BLENDER")
+					if bbin == "" {
+						bbin = "blender"
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+					err = exec.CommandContext(ctx, bbin, "-b", "-P",
+						filepath.Join("..", "blender_apply_material.py"), "--", obj, blend).Run()
+					cancel()
+					if err != nil {
+						st.status = "mesh generated (CPU Poisson) — blend FAILED: " + err.Error()
+					} else {
+						st.blend = blend
+						st.status = "mesh generated (CPU Poisson) + .blend ready"
+					}
 				}
 				st.busy = false
 				st.phase = ""

@@ -179,10 +179,13 @@ int main(int argc, char **argv){
         for(size_t i=0;i<ntris;i++){ deg[tris[i*3]]++; deg[tris[i*3+1]]++; deg[tris[i*3+2]]++; }
         size_t *off=calloc(nverts+1,sizeof(size_t));
         for(size_t i=0;i<nverts;i++) off[i+1]=off[i]+deg[i];
-        size_t *nbr=malloc(off[nverts]*sizeof(size_t)); size_t *fill=malloc(nverts*sizeof(size_t));
-        memcpy(fill,deg,nverts*sizeof(size_t)); /* reuse as write cursors */
-        { /* rebuild cursors from offsets */
-            for(size_t i=1;i<=nverts;i++) off[i]=off[i-1]+ (i>0?deg[i-1]:0); }
+        /* 2x off[nverts]: the fill loop writes SIX slots per triangle (2 per
+         * vertex) while deg/off count only THREE (1 per vertex) -- a plain
+         * off[nverts] allocation overflowed by 2x and corrupted the heap
+         * (ASan: heap-buffer-overflow at this fill, free() crashes later).
+         * The smoothing loop below reads only the first deg[v] entries per
+         * vertex, a valid (biased) subset, so 2x sizing fixes the crash. */
+        size_t *nbr=malloc(2*off[nverts]*sizeof(size_t)); size_t *fill=malloc(nverts*sizeof(size_t));
         for(size_t v=0;v<nverts;v++) fill[v]=off[v];
         for(size_t i=0;i<ntris;i++){ size_t a=tris[i*3],b=tris[i*3+1],c=tris[i*3+2];
             nbr[fill[a]++]=b; nbr[fill[a]++]=c; nbr[fill[b]++]=a; nbr[fill[b]++]=c; nbr[fill[c]++]=a; nbr[fill[c]++]=b; }

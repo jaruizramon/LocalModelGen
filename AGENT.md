@@ -232,11 +232,16 @@ loads directly via three.js GLTFLoader — OBJ is for Blender/legacy pipelines.
   no CUDA attention), but the splat-density isosurface is inherently
   noisy/faceted (a jagged shell) — high-frequency bumps survive even 16 Taubin
   iterations.
-- **Open work**: (a) fix the `gs2mesh` field-blur (a heap bug currently crashes
-  it — the blur is what would smooth the isosurface at the source); (b) switch
-  marching-tetrahedra → marching-cubes for cleaner topology; (c) fragmentation
-  is res-independent (measured 8–33 components at 96–256³) — the fix is
-  post-repair (PyMeshFix `joincomp`), not higher resolution.
+- **Open work**: (a) ~~fix the `gs2mesh` field-blur~~ — the "field-blur" never
+  existed in the source (doc error); the crash was a **2× adjacency
+  under-allocation** in the Taubin stage (`nbr` sized `off[nverts]` while the
+  fill writes 6 slots per triangle; ASan-verified heap-buffer-overflow,
+  fixed 2026-08-27). Remaining `gs2mesh` quality work: the density field is
+  `max()`-scattered — a sum-of-Gaussians field + binary-search level-set would
+  smooth the faceting at the source (DreamGaussian/GOF recipes); (b) switch
+  marching-tetrahedra → BCC-lattice tets for cleaner topology; (c)
+  fragmentation is res-independent (measured 8–33 components at 96–256³) — the
+  fix is post-repair (PyMeshFix `joincomp`), not higher resolution.
 - **256³ decode on 8 GB (verified 2026-08-27)** — runs with
   `LMG_FIELD_DTYPE=bf16` + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` +
   the int32 index-table patch: torch peak 5.6 GB / card 7.15 GB, ~30 s/job.

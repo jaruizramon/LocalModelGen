@@ -8,7 +8,8 @@ __pycache__/
 
 # built binaries (sources are in-repo: lib/gs2mesh.c, orchestrator/cmesh Makefile,
 # orchestrator/main.go, desktop/*.go)
-bin/
+bin/*
+!bin/gs2poisson
 orchestrator/3dgen
 desktop/lmgdesk
 orchestrator/cmesh/*.o

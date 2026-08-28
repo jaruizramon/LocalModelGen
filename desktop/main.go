@@ -303,7 +303,7 @@ func main() {
 				meshCount = md.NV
 				viewMode = 1
 				st.meshHint = ""
-				st.status = fmt.Sprintf("mesh generated (CPU gs2mesh) · %d tris", len(md.Idx)/3)
+				st.status = fmt.Sprintf("mesh generated (CPU Poisson) · %d tris", len(md.Idx)/3)
 			} else {
 				st.status = "renderer: " + err.Error()
 			}
@@ -430,8 +430,8 @@ func main() {
 		if imgui.Button("Generate Mesh") && !st.busy {
 			go func() {
 				st.busy = true
-				st.phase = "meshing (CPU)…"
-				st.status = "meshing (CPU)…"
+				st.phase = "meshing (CPU Poisson)…"
+				st.status = "meshing (CPU Poisson)…"
 				ply := latestPly()
 				if ply == "" {
 					st.status = "no gaussian (.ply) to mesh."
@@ -440,7 +440,10 @@ func main() {
 					return
 				}
 				obj := filepath.Join("..", "tmp", fmt.Sprintf("gs_mesh_%d.obj", time.Now().Unix()))
-				cmd := exec.Command(filepath.Join("..", "bin", "gs2mesh"), ply, obj, "128", "0.35")
+				// Poisson from splat centers: the density-isosurface path
+				// (gs2mesh) shatters sparse splat clouds into thousands of
+				// islands (measured); Poisson builds ONE connected surface.
+				cmd := exec.Command(filepath.Join("..", "bin", "gs2poisson"), ply, obj)
 				if err := cmd.Run(); err != nil {
 					st.status = "mesh: " + err.Error()
 				} else {

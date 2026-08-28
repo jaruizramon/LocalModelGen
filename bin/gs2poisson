@@ -1,0 +1,61 @@
+#!/home/pipo/miniconda3/envs/trellis/bin/python
+"""gs2poisson: gaussian PLY -> one connected OBJ via screened Poisson (Open3D).
+
+CPU-only replacement for the density-isosurface path (gs2mesh.c): grid-threshold
+isosurfacing fragments sparse splat clouds into thousands of islands (measured
+on a real 169K-splat relief: 5.7-10K components for max/sum/blurred/dilated
+fields at every threshold), while screened Poisson builds ONE continuous
+implicit function over the domain and does not shatter.
+
+Reads a TRELLIS save_ply (17 floats/splat: x,y,z / nx,ny,nz (zero placeholders)
+/ f_dc_0..2 / opacity (stored as logit) / scale_0..2 / rot_0..3), keeps splats
+whose sigmoid opacity exceeds a floor (drops faint floaters), estimates +
+orients normals (the ply's nx/ny/nz are zeros and would silently produce
+garbage), runs create_from_point_cloud_poisson, crops the low-density
+hallucinated shell, and writes an OBJ in the splat view frame (x, -y, -z) to
+match gs2mesh output.
+"""
+import sys
+import numpy as np
+import open3d as o3d
+
+ply, out = sys.argv[1], sys.argv[2]
+raw = open(ply, 'rb').read()
+hdr = raw[:raw.find(b'end_header') + 11]
+n = int([l for l in hdr.split(b'\n') if l.startswith(b'element vertex')][0].split()[-1])
+v = np.frombuffer(raw, dtype='<f4', count=n * 17, offset=len(hdr)).reshape(n, 17)
+pos = v[:, :3].copy()
+op = 1.0 / (1.0 + np.exp(-v[:, 9]))           # stored value is the logit
+pts = pos[op > 0.3]                            # drop faint floaters
+print(f'gs2poisson: {n} splats -> {pts.shape[0]} kept (op>0.3)', flush=True)
+if pts.shape[0] < 100:
+    print('gs2poisson: too few splats', file=sys.stderr)
+    sys.exit(1)
+
+pcd = o3d.geometry.PointCloud()
+pcd.points = o3d.utility.Vector3dVector(pts)
+diag = float(np.linalg.norm(pts.max(0) - pts.min(0)))
+pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
+    radius=diag * 0.03, max_nn=30))
+pcd.orient_normals_consistent_tangent_plane(k=20)
+mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+    pcd, depth=9)
+# crop the lowest-density ~2% (Poisson hallucinates surface in sparse regions;
+# decimate before clustering so the specks are cheap to identify)
+d = np.asarray(densities)
+mesh.remove_vertices_by_mask(d < np.percentile(d, 2))
+# decimate so the desktop wireframe renderer stays responsive (593K -> 60K)
+if len(mesh.triangles) > 60000:
+    mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=60000)
+# keep only the largest connected component (Poisson leaves tiny specks)
+cluster_idx, cluster_cnt, _ = mesh.cluster_connected_triangles()
+big = int(np.argmax(cluster_cnt))
+mesh.remove_triangles_by_mask((np.asarray(cluster_idx) != big).tolist())
+mesh.remove_unreferenced_vertices()
+# splat view frame: ply is (x,y,z); the viewer renders (x,-y,-z) -- same as gs2mesh
+verts = np.asarray(mesh.vertices).copy()
+verts[:, 1] = -verts[:, 1]
+verts[:, 2] = -verts[:, 2]
+mesh.vertices = o3d.utility.Vector3dVector(verts)
+o3d.io.write_triangle_mesh(out, mesh)
+print(f'gs2poisson: wrote {out} ({len(mesh.vertices)} v, {len(mesh.triangles)} f)', flush=True)

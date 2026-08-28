@@ -52,9 +52,16 @@ cluster_idx, cluster_cnt, _ = mesh.cluster_connected_triangles()
 big = int(np.argmax(cluster_cnt))
 mesh.remove_triangles_by_mask((np.asarray(cluster_idx) != big).tolist())
 mesh.remove_unreferenced_vertices()
+# Match the splat view frame: (x, -y, -z), the same transform parseGaussianPly
+# applies. The raw PLY frame renders upside-down in the desktop's +Y-up camera
+# (TRELLIS's own video uses up=+Z, so its 'upright' is a different frame);
+# the splat view has always shown the flipped frame and reads correctly.
+# (2026-08-28)
+verts = np.asarray(mesh.vertices).copy()
+verts[:, 1] = -verts[:, 1]
+verts[:, 2] = -verts[:, 2]
 # write a plain OBJ (v x y z / f a b c): Open3D's own writer emits "vn" lines
 # and "f v//vn" slash-indexed faces, which naive parsers misread
-verts = np.asarray(mesh.vertices)
 faces = np.asarray(mesh.triangles) + 1          # 1-indexed
 with open(out, 'w') as fh:
     for x, y, z in verts:

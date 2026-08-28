@@ -224,8 +224,9 @@ func baseColorImage(doc *gltfDoc, binChunk []byte) []byte {
 	return binChunk[start:end]
 }
 
-// parseObjMesh reads a simple Wavefront .obj (v x y z / f a b c) produced by the
-// CPU gs2mesh tool. No UV/material — the mesh renders flat-colored.
+// parseObjMesh reads a Wavefront .obj (v x y z / f a b c). Accepts the
+// Open3D-produced variants (v with trailing r g b, interleaved vn lines) --
+// only lines starting "v " / "f " are geometry; "vn"/"vt" are skipped.
 func parseObjMesh(path string) (*MeshData, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -238,11 +239,11 @@ func parseObjMesh(path string) (*MeshData, error) {
 		if len(line) == 0 {
 			continue
 		}
-		if line[0] == 'v' && len(line) > 2 {
+		if line[0] == 'v' && line[1] == ' ' && len(line) > 2 {
 			var x, y, z float32
 			fmt.Sscanf(string(line[2:]), "%f %f %f", &x, &y, &z)
 			pos = append(pos, x, y, z)
-		} else if line[0] == 'f' && len(line) > 2 {
+		} else if line[0] == 'f' && line[1] == ' ' && len(line) > 2 {
 			var a, b, c int
 			fmt.Sscanf(string(line[2:]), "%d %d %d", &a, &b, &c)
 			idx = append(idx, uint32(a-1), uint32(b-1), uint32(c-1))

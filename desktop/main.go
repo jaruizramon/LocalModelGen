@@ -166,8 +166,11 @@ func main() {
 	impl := ibackend.ImguiGlfw3Init(win, io)
 	defer impl.Shutdown()
 
+	// FlatColor default: light gray, not black -- a black solid mesh is
+	// invisible on the dark viewport when wireframe is off.
 	st := &appState{seed: 1, ssCfg: 7.5, slatCfg: 3.0, ssSteps: 8, slatSteps: 8,
-		tris: 50000, texSize: 1024, smooth: true, smoothIters: 10, offload: 1.0, renderOpts: RenderOpts{Colorize: true, SizeMul: 1}, showMaskFill: true, model: "trellis-image"}
+		tris: 50000, texSize: 1024, smooth: true, smoothIters: 10, offload: 1.0,
+		renderOpts: RenderOpts{Colorize: true, SizeMul: 1, FlatColor: [3]float32{0.72, 0.76, 0.82}}, showMaskFill: true, model: "trellis-image"}
 
 	log.Printf("[orch] backend: %s", orchURL())
 

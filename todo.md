@@ -9,8 +9,12 @@
   DRAM), ratio slider in both UIs.
 - Everything runs from `LocalModelGen/`; `~/trellis` = trellis package +
   symlinks only.
-- Mesh backend is 100% Python (`fast_simplification` wheel + trimesh).
-  `bin/meshproc` is fixed and verified but not yet wired in.
+- Mesh post-processing runs as the `bin/meshproc` C/C++ subprocess
+  (repair → dedegen → decimate → component cleanup → bilateral smooth →
+  orient) and hits the requested face target exactly.
+- Worker endpoints are sync (threadpool): `/health`/`/status` answer during a
+  job; `_job_lock` is a real lock; `tmp/` is retention-pruned
+  (`LMG_RETENTION_DAYS=14`).
 
 ## Blocked
 
@@ -28,70 +32,45 @@ three.js objects against a byte-identical copy of `viewer.js`, 11/11 assertions
 Pixels remain unverified; needs `apt install xvfb` (or any capture tool) or a
 manual look in a real browser.
 
-## Next actions (unblocked, in priority order)
-
-### 1. Worker event-loop stall
-`/generate` is `async def` (`worker.py`) but every operation in it blocks
-(CUDA sampling, `render_video`, `to_glb`, the blender child). For the whole
-~30 s job the uvicorn loop is frozen, so `/health` and `/status` cannot answer
-— exactly what the Go watchdog polls, and what makes `busy` unobservable.
-Make it `def` (threadpool) or `run_in_threadpool` the body. **When you do,
-`_job_lock` must become a real lock** (`threading.Lock`), and the `/clear`
-guard added below stops being merely advisory: today `/clear` is only
-accidentally serialized by the frozen loop.
-
-### 2. Wire the mesh branch to `bin/meshproc` (now a pure speed decision)
-Verified equivalent — see "C decimator" under Done. `MESHPROC` and
-`_write_mesh_bin`/`_read_mesh_bin` already exist at
-`lib/run_trellis_low_vram.py:52-72` with zero call sites; the invocation is
-`--repair --dedegen --decimate N*4 --cleanup 0.01 [--smooth 3]`.
-Before switching, fix two ordering/robustness defects found in review:
-- `cxx/meshproc.cpp`: `--smooth` runs **before** the post-decimate
-  non-manifold/degenerate/component cleanup, so it smooths against garbage
-  topology and contaminates surviving vertex positions. Move it after.
-- `cm_keep_components` has no keep-largest fallback: on a shattered mesh every
-  component can fall under the 1 % threshold and the mesh is annihilated to
-  0 verts / 0 faces, then written out as a valid-looking empty CMESH with
-  exit code 0.
-
-### 3. Housekeeping
-- **No git repo.** `git status` → *not a repository*. A project with this many
-  hard-won, undocumented-elsewhere fixes (the four AGENT.md incompatibility
-  workarounds, the gradio pins, the in-tree trellis library patches) has no
-  version control and no way to bisect a regression. Highest-leverage
-  non-functional fix: `git init` + commit.
-- `tmp/` is **2.5 GB / 313 files** and grows ~30 MB per generation (the `.ply`
-  alone is 26.8 MB). Nothing prunes it — add a retention policy.
-- Texture collision: `convert_glb_to_obj` writes `material_0.png` +
-  `material.mtl` straight into the shared `tmp/`, and `_collect_outputs` zips
-  every `*.mtl`/`*.png` in that directory. Every job overwrites the previous
-  texture, so older `.obj` files silently reference another job's image and
-  zips can pick up foreign files. Convert into a per-job subdirectory.
-  (The `/convert` endpoints now use throwaway scratch dirs, but `/generate`
-  still writes its OBJ set loose into `tmp/`.)
-- Unvalidated `/generate` input: negative `target_tris` reaches
-  `quadric_simplify(target_count=<0)`; `texture_size` is unbounded and squares
-  the bake VRAM (the API accepts 8192 where the UI caps at 2048). Note
-  `texture_size=4096` is now a *reliable* OOM rather than a leak, but it should
-  be rejected up front.
-- Dead code: `lib/tiled_extract.py` (zero importers), `_stage_mesh_extractor_cuda`,
-  `cm_weld` / `cm_dedupe_faces` / `cm_quadric_decimate` (~180 lines of unreachable
-  C, all three carrying independent HIGH-severity bugs), `orchestrator/cmd/` and
-  `web/` (both empty dirs), the `#tiled` checkbox in `index.html:32` (never
-  appended to the FormData; the worker has no such field), and the now-unused
-  `MESHPROC` / `_write_mesh_bin` / `_read_mesh_bin` if item 2 is dropped.
-- Doc drift: `README.md:36` says `./lmgenlmgen`; the binary is `3dgen`. README
-  claims a "job queue" — `main.go` implements reject-if-busy. The documented env
-  list omits `WORKER_URL`, `STATIC_DIR`, `LMG_BLENDER_TIMEOUT`; the
-  `/api/generate` field list omits `ss_steps`, `slat_steps`, `ss_cfg`,
-  `slat_cfg`, `smooth_mesh`, `offload_ratio`.
-- `PYTORCH_CUDA_ALLOC_CONF` mismatch: `worker/worker.py` setdefaults
-  `max_split_size_mb:256` *before* importing the runner, so the runner's
-  `expandable_segments:True` (documented in AGENT.md as a required runtime env)
-  never takes effect. The OOM message even suggests it. Pick one deliberately
-  and benchmark the peak — do not just flip it.
-
 ## Done
+
+- [x] **Worker event-loop stall — FIXED.** `/generate` (and `/convert`) were
+      `async def` with fully blocking bodies (CUDA sampling, render, bake,
+      blender child), freezing the uvicorn loop for the whole ~30 s job so
+      `/health`/`/status` could not answer (and `busy` was unobservable). Now
+      sync defs (threadpool); `_job_lock` is a real `threading.Lock`; `/clear`
+      guards with `locked()`. Verified: `/health` answered 149× during a
+      33.6 s job (busy in 33 checks), zero failures; validation 400s land
+      without touching the lock.
+- [x] **Mesh branch wired to `bin/meshproc` — DONE.** The whole post-process
+      (repair → dedegen → decimate → cleanup → smooth → orient) runs as one
+      C/C++ subprocess. Fixed first: `--smooth` moved AFTER the post-decimate
+      cleanup (was smoothing against garbage topology), and
+      `cm_keep_components` got a keep-largest fallback (was annihilating a
+      shattered mesh to a valid-looking empty CMESH; unit-tested with a
+      60-tiny-comp + 80-face-strip input at frac 0.5 and 0.6 — both keep 80).
+      Deviations from this plan: `--decimate cap`, not `cap*4` — the GH
+      target is the face count (datapoint: 12000 → 11999; the old Python path
+      at 3000 gave 8777 on shattered geometry), so `cap` is contract-correct —
+      and `--smooth smooth_iters` (parameter-faithful). Verified on-card:
+      shape input 29.4 s / 2913 faces / same bbox / 27 GLB comps (Python
+      baseline 2947-2999 faces, 26-29 comps); `decimate -> 3000 faces` hits
+      the target exactly; the pathological gray input overshoots to ~8.8 K
+      exactly like the Python decimator (both stop on quality, not by design).
+- [x] **Housekeeping — DONE.** git repo initialized (initial commit; sources
+      only — `tmp/`, built binaries, `__pycache__` ignored); `tmp/` retention
+      pruning (`LMG_RETENTION_DAYS=14`, at startup and after each job);
+      `/generate` OBJ/zip converts in a per-job scratch dir (no more
+      `material_0.png` clobbering); `/generate` input validation
+      (`target_tris >= 0`, `texture_size` in [256, 2048] → 400); dead code
+      removed (`tiled_extract.py`, `_stage_mesh_extractor_cuda`,
+      `cm_weld`/`cm_dedupe_faces`/`cm_quadric_decimate` + ~290 lines of
+      private helpers, orphaned `mesh_smooth.py`, empty `orchestrator/cmd/` +
+      `web/`; the `#tiled` checkbox was already gone — this file was stale on
+      that); README/AGENT.md drift fixed (run command, env/field lists,
+      allocator); allocator decided by measurement: `max_split_size_mb:256`
+      (13+ jobs, 3.9-6.1 GB peaks, no allocator-related OOM) — worker and
+      runner setdefaults agree, AGENT.md updated.
 
 - [x] **Non-128 subsample tiers wrongly scaled — FIXED.** `tiled_mesh_decode.py`
       subsampled with `coords // (256 // res)`, which is only exact when
@@ -299,18 +278,17 @@ Before switching, fix two ordering/robustness defects found in review:
       reviewed (no `os.remove` / `rmtree` / `mkdtemp` anywhere in `lib/` or
       `worker/`); the runner still creates no temp files, its `_write_mesh_bin`
       writers being dead code. Now genuinely true for the `/convert` paths, which
-      use throwaway scratch dirs. `/generate`'s own artifacts are still retained
-      by design and still unpruned — see Housekeeping.
+      use throwaway scratch dirs, AND for `/generate`'s OBJ conversion (per-job
+      scratch dir). Output retention is handled by `LMG_RETENTION_DAYS` pruning.
 
 ## Key files
 
 | Path | Role |
 |---|---|
-| `lib/run_trellis_low_vram.py` | offload runner; mesh branch is the Python path (swap to meshproc now unblocked) |
+| `lib/run_trellis_low_vram.py` | offload runner; mesh post-process via `bin/meshproc` subprocess |
 | `lib/hwprofile.py` | detection + tiers + keep-resident budget |
 | `lib/tiled_mesh_decode.py` | single-grid 128³ decode (LIVE) |
-| `lib/tiled_extract.py` | DEAD — zero importers, superseded by `tiled_mesh_decode.py` |
-| `worker/worker.py` | FastAPI worker; `/status` exposes `hw` + `offload_ratio` |
+| `worker/worker.py` | FastAPI worker; sync endpoints (threadpool), `/status` exposes `hw` + `offload_ratio` |
 | `orchestrator/cmesh/` | C kernels (`cmesh.c/h`), vendored `Simplify.h`, `cxx/meshproc.cpp`, `cxx/fsdecimate_cli.cpp`, `Makefile` |
 | `bin/meshproc`, `bin/fsdecimate` | built subprocesses (`make -C orchestrator/cmesh`) |
 | `orchestrator/3dgen` | Go orchestrator (embed UI, static, CORS, watchdog) |
